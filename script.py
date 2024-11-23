@@ -12,7 +12,7 @@ import numpy as np
 import taichi as ti
 import torch
 from torch.nn import Upsample
-from replay_memory import ReplayMemory
+from replay_memory import PPOMemory
 import dittogym
 from model import GaussianPolicy, QNetwork
 
@@ -22,24 +22,65 @@ from ddpg import DDPG
 from ppo import PPO
 
 # Parsing Arguments
-parser = argparse.ArgumentParser(description='DittoGym Project')
-parser.add_argument('--agent', default="sac", type=str, required=True, metavar='sac',
-                    help='reinforcement learning agent (sac, ppo, ddpg)')
-parser.add_argument('--env_name', default="shapematch-coarse-v0", metavar='shapematch-coarse-v0',
-                    help='name of the environment to run')
-parser.add_argument('--config_file_path', type=str, default=None, metavar='././', required=True,
-                    help='path of the config file')
-parser.add_argument('--wandb', type=bool, default=False, metavar="False",
-                    help='if use wandb')
-parser.add_argument('--gui', type=bool, default=False, metavar='False',
-                    help='if use gui')
-parser.add_argument('--visualize_interval', type=int, default=10, metavar='10',
-                    help='visualization interval')
+parser = argparse.ArgumentParser(description="DittoGym Project")
+parser.add_argument(
+    "--agent",
+    default="sac",
+    type=str,
+    required=True,
+    metavar="sac",
+    help="reinforcement learning agent (sac, ppo, ddpg)",
+)
+parser.add_argument(
+    "--env_name",
+    default="shapematch-coarse-v0",
+    metavar="shapematch-coarse-v0",
+    help="name of the environment to run",
+)
+parser.add_argument(
+    "--config_file_path",
+    type=str,
+    default=None,
+    metavar="././",
+    required=True,
+    help="path of the config file",
+)
+parser.add_argument(
+    "--wandb", type=bool, default=False, metavar="False", help="if use wandb"
+)
+parser.add_argument(
+    "--gui", type=bool, default=False, metavar="False", help="if use gui"
+)
+parser.add_argument(
+    "--visualize_interval",
+    type=int,
+    default=10,
+    metavar="10",
+    help="visualization interval",
+)
+
+
+# PPO-specific arguments with defaults
+parser.add_argument(
+    "--clip_epsilon", type=float, default=0.2, help="PPO clip epsilon parameter"
+)
+parser.add_argument(
+    "--value_coef", type=float, default=0.5, help="Value loss coefficient for PPO"
+)
+parser.add_argument(
+    "--entropy_coef", type=float, default=0.01, help="Entropy coefficient for PPO"
+)
+parser.add_argument(
+    "--num_epochs", type=int, default=10, help="Number of epochs per PPO update"
+)
+parser.add_argument(
+    "--gae_lambda", type=float, default=0.95, help="GAE lambda parameter for PPO"
+)
 
 args = parser.parse_args()
 
 # Name Id
-args.name = args.env_name + "_" + datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+args.name = args.env_name + "_" + datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
 # Wandb
 if args.wandb:
@@ -82,7 +123,7 @@ if not os.path.exists(file_path):
     os.makedirs(file_path)
 if args.save_model and not os.path.exists(file_path + "/models"):
     os.makedirs(file_path + "/models")
-json.dump(args.__dict__, open(file_path + "/config.json", 'w'), indent=4)
+json.dump(args.__dict__, open(file_path + "/config.json", "w"), indent=4)
 
 
 torch.set_num_threads(16)
@@ -106,17 +147,17 @@ utils.set_random_seed(args.seed, args.cuda_deterministic)
 env.action_space.seed(args.seed)
 
 # Agent
-if args.agent=="sac":
+if args.agent == "sac":
     agent = SAC(env.observation_space.shape[0], env.action_space, args)
-elif args.agent=="ddpg":
+elif args.agent == "ddpg":
     agent = DDPG(env.observation_space.shape[0], env.action_space, args)
-elif args.agent=="ppo":
+elif args.agent == "ppo":
     agent = PPO(env.observation_space.shape[0], env.action_space, args)
 else:
     raise NameError("wrong agent name available agents are: sac, ppo, ddpg")
 
 # Memory
-memory = ReplayMemory(args.replay_size, args.seed, args.batch_size)
+memory = PPOMemory(args.replay_size, args.seed, args.batch_size)
 
 total_numsteps = 0
 updates = 0
@@ -131,7 +172,11 @@ for i_episode in itertools.count(1):
     state = env.reset()
     env.render(gui, record=False)
 
-    if args.visualize and total_numsteps >= args.start_steps and visualize_gap == args.visualize_interval:
+    if (
+        args.visualize
+        and total_numsteps >= args.start_steps
+        and visualize_gap == args.visualize_interval
+    ):
         env.render(gui, record=True, record_id=total_numsteps)
         generate_video = total_numsteps
         visualize_gap = 0
@@ -150,34 +195,53 @@ for i_episode in itertools.count(1):
         else:
 
             final_action, _ = agent.select_action(state)
-            
+
             # log action image (only log x direction)
             if args.wandb and total_numsteps % 200 == 0:
-                final_action_ = ((final_action.reshape(2, args.action_res, args.action_res)[0] + 1) / 2 * 255)
-                final_action_ = np.clip(cv2.resize(final_action_, (upsampled_action_res, upsampled_action_res),\
-                    interpolation=cv2.INTER_CUBIC), 0, 255).astype(np.uint8)
+                final_action_ = (
+                    (final_action.reshape(2, args.action_res, args.action_res)[0] + 1)
+                    / 2
+                    * 255
+                )
+                final_action_ = np.clip(
+                    cv2.resize(
+                        final_action_,
+                        (upsampled_action_res, upsampled_action_res),
+                        interpolation=cv2.INTER_CUBIC,
+                    ),
+                    0,
+                    255,
+                ).astype(np.uint8)
                 wandb.log({"final_action_x": wandb.Image(final_action_)})
-        
+
         # RL training
         if len(memory) > args.batch_size:
             # Number of updates per step in environment
             for i in range(args.updates_per_step):
                 # Update parameters of all the networks
-                critic_1_loss, critic_2_loss, policy_loss, entropy, alpha, std_norm, mask_regularize_loss \
-                    = agent.update_parameters(memory, updates)
+                (
+                    critic_1_loss,
+                    critic_2_loss,
+                    policy_loss,
+                    entropy,
+                    alpha,
+                    std_norm,
+                    mask_regularize_loss,
+                ) = agent.update_parameters(memory, updates)
                 if args.wandb:
-                    wandb.log({'train_aver_q_loss': (critic_1_loss + critic_2_loss) / 2})
-                    wandb.log({'train_policy_loss': policy_loss})
-                    wandb.log({'train_entropy': entropy})
-                    wandb.log({'alpha': alpha})
-                    wandb.log({'std_norm': std_norm})
-                    wandb.log({'mask_regularize_loss': mask_regularize_loss})
+                    wandb.log(
+                        {"train_aver_q_loss": (critic_1_loss + critic_2_loss) / 2}
+                    )
+                    wandb.log({"train_policy_loss": policy_loss})
+                    wandb.log({"train_entropy": entropy})
+                    wandb.log({"alpha": alpha})
+                    wandb.log({"std_norm": std_norm})
+                    wandb.log({"mask_regularize_loss": mask_regularize_loss})
                 updates += 1
-
 
         # Take final action and tranition to next state
         next_state, reward, terminated, truncated, _ = env.step(final_action)
-        
+
         # render
         if args.visualize and render:
             env.render(gui, record=True)
@@ -188,10 +252,11 @@ for i_episode in itertools.count(1):
         episode_reward += reward
         episode_normalize_reward += (reward - agent.mean) / (agent.var**0.5 + 1e-8)
 
-
         # Ignore the "done" signal if it comes from hitting the time horizon.
         mask = 1 if truncated else float(not terminated)
-        memory.push(state, final_action, reward, next_state, mask) # Append transition to memory
+        memory.push(
+            state, final_action, reward, next_state, mask
+        )  # Append transition to memory
         state = next_state
 
         if total_numsteps % 1000 == 0:
@@ -199,18 +264,21 @@ for i_episode in itertools.count(1):
                 agent.save_model(filename=file_path + "/models/" + str(total_numsteps))
 
         if args.wandb:
-            wandb.log({'total_num_steps': total_numsteps})
-            wandb.log({'train_step_reward': reward})
+            wandb.log({"total_num_steps": total_numsteps})
+            wandb.log({"train_step_reward": reward})
 
     # End of Episode
     if args.wandb:
-        wandb.log({'episode_num': i_episode})
-        wandb.log({'train_episode_reward': episode_reward})
-        wandb.log({'train_episode_normalize_reward': episode_normalize_reward})
-        wandb.log({'train_episode_length': episode_steps})
+        wandb.log({"episode_num": i_episode})
+        wandb.log({"train_episode_reward": episode_reward})
+        wandb.log({"train_episode_normalize_reward": episode_normalize_reward})
+        wandb.log({"train_episode_length": episode_steps})
 
-    print("Episode: {}, total numsteps: {}, episode steps: {}, reward: {}"\
-    .format(i_episode, total_numsteps, episode_steps, round(episode_reward, 2)))
+    print(
+        "Episode: {}, total numsteps: {}, episode steps: {}, reward: {}".format(
+            i_episode, total_numsteps, episode_steps, round(episode_reward, 2)
+        )
+    )
 
     utils.generate_video(file_path, generate_video)
 
