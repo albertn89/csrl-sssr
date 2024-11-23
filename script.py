@@ -60,30 +60,10 @@ parser.add_argument(
 )
 
 # PPO specific arguments
-parser.add_argument(
-    "--clip_epsilon", type=float, default=0.2, metavar="0.2", help="PPO clip parameter"
-)
-parser.add_argument(
-    "--ppo_epochs",
-    type=int,
-    default=10,
-    metavar="10",
-    help="number of epochs to update policy in PPO",
-)
-parser.add_argument(
-    "--value_coef",
-    type=float,
-    default=0.5,
-    metavar="0.5",
-    help="value function loss coefficient",
-)
-parser.add_argument(
-    "--entropy_coef",
-    type=float,
-    default=0.01,
-    metavar="0.01",
-    help="entropy term coefficient",
-)
+parser.add_argument("--value_coef", type=float, default=0.1)
+parser.add_argument("--clip_epsilon", type=float, default=0.2)
+parser.add_argument("--ppo_epochs", type=int, default=10)
+parser.add_argument("--entropy_coef", type=float, default=0.01)
 
 
 args = parser.parse_args()

@@ -37,5 +37,9 @@
 	"target_update_interval": 1,
 	"tau": 0.005,
 	"updates_per_step": 1,
-	"yield_stress": 62
+	"yield_stress": 62,
+
+	"visualize": true,
+	"save_file_name": ".",
+	"target_dir_abs_path": "C:/Github/CFP/dittogym/target_for_shape_match/"
 }
