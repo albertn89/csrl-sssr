@@ -12,7 +12,7 @@ import numpy as np
 import taichi as ti
 import torch
 from torch.nn import Upsample
-from replay_memory import PPOMemory
+from replay_memory import ReplayMemory
 import dittogym
 from model import GaussianPolicy, QNetwork
 
@@ -54,28 +54,37 @@ parser.add_argument(
 parser.add_argument(
     "--visualize_interval",
     type=int,
-    default=10,
-    metavar="10",
+    default=5,
+    metavar="5",
     help="visualization interval",
 )
 
+# PPO specific arguments
+parser.add_argument(
+    "--clip_epsilon", type=float, default=0.2, metavar="0.2", help="PPO clip parameter"
+)
+parser.add_argument(
+    "--ppo_epochs",
+    type=int,
+    default=10,
+    metavar="10",
+    help="number of epochs to update policy in PPO",
+)
+parser.add_argument(
+    "--value_coef",
+    type=float,
+    default=0.5,
+    metavar="0.5",
+    help="value function loss coefficient",
+)
+parser.add_argument(
+    "--entropy_coef",
+    type=float,
+    default=0.01,
+    metavar="0.01",
+    help="entropy term coefficient",
+)
 
-# PPO-specific arguments with defaults
-parser.add_argument(
-    "--clip_epsilon", type=float, default=0.2, help="PPO clip epsilon parameter"
-)
-parser.add_argument(
-    "--value_coef", type=float, default=0.5, help="Value loss coefficient for PPO"
-)
-parser.add_argument(
-    "--entropy_coef", type=float, default=0.01, help="Entropy coefficient for PPO"
-)
-parser.add_argument(
-    "--num_epochs", type=int, default=10, help="Number of epochs per PPO update"
-)
-parser.add_argument(
-    "--gae_lambda", type=float, default=0.95, help="GAE lambda parameter for PPO"
-)
 
 args = parser.parse_args()
 
@@ -157,7 +166,7 @@ else:
     raise NameError("wrong agent name available agents are: sac, ppo, ddpg")
 
 # Memory
-memory = PPOMemory(args.replay_size, args.seed, args.batch_size)
+memory = ReplayMemory(args.replay_size, args.seed, args.batch_size)
 
 total_numsteps = 0
 updates = 0

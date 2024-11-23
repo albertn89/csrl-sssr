@@ -4,8 +4,7 @@ import random
 import threading
 import numpy as np
 
-
-class PPOMemory:
+class ReplayMemory:
     def __init__(self, capacity, seed, batch_size=256):
         random.seed(seed)
         self.length = 0
@@ -51,48 +50,3 @@ class PPOMemory:
 
     def __len__(self):
         return self.length
-
-
-class PPOMemory:
-    def __init__(self):
-        self.states = []
-        self.actions = []
-        self.rewards = []
-        self.next_states = []
-        self.dones = []
-        self.log_probs = []
-        self.values = []
-
-    def push(self, state, action, reward, next_state, done, log_prob, value):
-        self.states.append(state)
-        self.actions.append(action)
-        self.rewards.append(reward)
-        self.next_states.append(next_state)
-        self.dones.append(done)
-        self.log_probs.append(log_prob)
-        self.values.append(value)
-
-    def get_batch(self):
-        batch = (
-            self.states,
-            self.actions,
-            self.rewards,
-            self.next_states,
-            self.dones,
-            self.log_probs,
-            self.values,
-        )
-        self.clear()
-        return batch
-
-    def clear(self):
-        self.states = []
-        self.actions = []
-        self.rewards = []
-        self.next_states = []
-        self.dones = []
-        self.log_probs = []
-        self.values = []
-
-    def __len__(self):
-        return len(self.states)

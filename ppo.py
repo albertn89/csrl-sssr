@@ -1,108 +1,105 @@
+import os
 import torch
 import torch.nn.functional as F
 from torch.optim import Adam
 from agent import Agent
-from model import GaussianPolicy
-import numpy as np
+from ppo_policy import PPOPolicy  # Import the new PPOPolicy class
 
 
 class PPO(Agent):
     def __init__(self, num_inputs, action_space, args):
         super().__init__(num_inputs, action_space, args)
 
-        self.clip_epsilon = args.clip_epsilon
-        self.value_coef = args.value_coef
-        self.entropy_coef = args.entropy_coef
-        self.num_epochs = args.num_epochs
-        self.gae_lambda = args.gae_lambda
         self.action_res = args.action_res
         self.upsampled_action_res = args.action_res * args.action_res_resize
 
-        # Policy Network (Actor)
-        self.policy = GaussianPolicy(
+        # Use PPOPolicy instead of GaussianPolicy
+        self.policy = PPOPolicy(
             num_inputs,
             self.action_res,
             self.upsampled_action_res,
             args.residual,
             args.coarse2fine_bias,
-        ).to(self.device)
+        ).to(device=self.device)
+
         self.policy_optimizer = Adam(self.policy.parameters(), lr=args.lr)
 
-        # Value Network (Critic)
-        self.value_net = torch.nn.Sequential(
-            torch.nn.Linear(num_inputs, args.hidden_size),
-            torch.nn.ReLU(),
-            torch.nn.Linear(args.hidden_size, args.hidden_size),
-            torch.nn.ReLU(),
-            torch.nn.Linear(args.hidden_size, 1),
-        ).to(self.device)
-        self.value_optimizer = Adam(self.value_net.parameters(), lr=args.lr)
+        # Training parameters
+        self.clip_epsilon = args.clip_epsilon
+        self.epochs = args.ppo_epochs
+        self.value_loss_coef = args.value_coef
+        self.entropy_coef = args.entropy_coef
 
-    def select_action(self, state):
-        """Select action using the policy network"""
+    def select_action(self, state, task=None):
         state = (
             (torch.FloatTensor(state) / 255.0 * 2.0 - 1.0).to(self.device).unsqueeze(0)
         )
 
-        # Sample action from policy
         with torch.no_grad():
-            action, log_prob, _, _, mask = self.policy.sample(state)
-            value = self.value_net(state)
+            if task is None or "shapematch" not in task:
+                action, _, _, _, mask = self.policy.sample(state)
+            else:
+                _, _, action, _, mask = self.policy.sample(state)
+                action = torch.tanh(action)
 
-        action = action.cpu().numpy()[0]
-        log_prob = log_prob.cpu().numpy()[0]
-        value = value.cpu().numpy()[0]
-
-        return action, log_prob, value
-
-    def compute_gae(self, rewards, values, next_values, dones):
-        """Compute Generalized Advantage Estimation"""
-        deltas = rewards + self.gamma * next_values * (1 - dones) - values
-        advantages = torch.zeros_like(rewards)
-        lastgae = 0
-
-        for t in reversed(range(len(rewards))):
-            lastgae = (
-                deltas[t] + self.gamma * self.gae_lambda * (1 - dones[t]) * lastgae
-            )
-            advantages[t] = lastgae
-
-        returns = advantages + values
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
-        return advantages, returns
+        action = action.detach().cpu().numpy()[0]
+        return action, None
 
     def update_parameters(self, memory, updates):
-        """Update policy and value networks using PPO"""
-        # Collect and process batch data
-        states, actions, rewards, next_states, dones, old_log_probs, values = (
-            memory.get_batch()
+        # Get batch of experiences
+        states, actions, rewards, next_states, dones = memory.sample(
+            self.args.batch_size
         )
 
-        # Convert to tensors
-        states = torch.FloatTensor(states).to(self.device)
-        next_states = torch.FloatTensor(next_states).to(self.device)
+        # Convert to tensors and normalize states
+        states = (torch.FloatTensor(states) / 255.0 * 2.0 - 1.0).to(self.device)
+        next_states = (torch.FloatTensor(next_states) / 255.0 * 2.0 - 1.0).to(
+            self.device
+        )
         actions = torch.FloatTensor(actions).to(self.device)
-        rewards = torch.FloatTensor(rewards).to(self.device)
-        dones = torch.FloatTensor(dones).to(self.device)
-        old_log_probs = torch.FloatTensor(old_log_probs).to(self.device)
-        values = torch.FloatTensor(values).to(self.device)
+        rewards = torch.FloatTensor(rewards).to(self.device).unsqueeze(1)
+        dones = torch.FloatTensor(dones).to(self.device).unsqueeze(1)
 
-        # Normalize rewards
+        # Normalize rewards using running statistics
         rewards = self.reward_normalization(rewards)
 
-        # Compute GAE and returns
+        # Compute advantages and returns
         with torch.no_grad():
-            next_values = self.value_net(next_states)
-        advantages, returns = self.compute_gae(rewards, values, next_values, dones)
+            next_values = self.policy.get_value(next_states)
+            current_values = self.policy.get_value(states)
 
-        # PPO update for specified number of epochs
-        for _ in range(self.num_epochs):
-            # Get current policy distribution
-            new_actions, new_log_probs, _, _, _ = self.policy.sample(states)
+            # GAE (Generalized Advantage Estimation)
+            advantages = torch.zeros_like(rewards).to(self.device)
+            gae = 0
+            for t in reversed(range(rewards.shape[0])):
+                if t == rewards.shape[0] - 1:
+                    next_value = next_values[t]
+                else:
+                    next_value = current_values[t + 1]
+
+                delta = (
+                    rewards[t]
+                    + self.gamma * next_value * (1 - dones[t])
+                    - current_values[t]
+                )
+                gae = delta + self.gamma * self.tau * (1 - dones[t]) * gae
+                advantages[t] = gae
+
+            returns = advantages + current_values
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        # PPO update
+        total_value_loss = 0
+        total_policy_loss = 0
+        total_entropy = 0
+
+        for _ in range(self.epochs):
+            # Get current policy outputs
+            _, log_probs, entropy = self.policy.evaluate_actions(states, actions)
+            values = self.policy.get_value(states)
 
             # Compute ratio of new and old probabilities
-            ratio = torch.exp(new_log_probs - old_log_probs)
+            ratio = torch.exp(log_probs)
 
             # Compute surrogate losses
             surr1 = ratio * advantages
@@ -115,42 +112,50 @@ class PPO(Agent):
             policy_loss = -torch.min(surr1, surr2).mean()
 
             # Value loss
-            value_pred = self.value_net(states)
-            value_loss = F.mse_loss(value_pred, returns)
-
-            # Entropy loss for exploration
-            entropy_loss = -self.entropy_coef * new_log_probs.mean()
+            value_loss = F.mse_loss(values, returns)
 
             # Total loss
-            total_loss = policy_loss + self.value_coef * value_loss + entropy_loss
+            loss = (
+                policy_loss
+                + self.value_loss_coef * value_loss
+                - self.entropy_coef * entropy
+            )
 
-            # Update networks
+            # Update policy
             self.policy_optimizer.zero_grad()
-            self.value_optimizer.zero_grad()
-            total_loss.backward()
+            loss.backward()
             torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 0.5)
-            torch.nn.utils.clip_grad_norm_(self.value_net.parameters(), 0.5)
             self.policy_optimizer.step()
-            self.value_optimizer.step()
 
-        return value_loss.item(), policy_loss.item(), entropy_loss.item()
+            total_value_loss += value_loss.item()
+            total_policy_loss += policy_loss.item()
+            total_entropy += entropy.item()
+
+        # Average losses over epochs
+        avg_value_loss = total_value_loss / self.epochs
+        avg_policy_loss = total_policy_loss / self.epochs
+        avg_entropy = total_entropy / self.epochs
+
+        return avg_value_loss, 0, avg_policy_loss, avg_entropy, self.alpha, 0, 0
 
     def save_model(self, filename):
-        """Save model parameters"""
         torch.save(
             {
                 "policy_state_dict": self.policy.state_dict(),
-                "value_net_state_dict": self.value_net.state_dict(),
                 "policy_optimizer_state_dict": self.policy_optimizer.state_dict(),
-                "value_optimizer_state_dict": self.value_optimizer.state_dict(),
+                "mean": self.mean,
+                "var": self.var,
             },
-            filename,
+            filename + ".pth",
         )
 
-    def load_model(self, filename):
-        """Load model parameters"""
-        checkpoint = torch.load(filename)
+    def load_model(self, filename, for_train=False):
+        print("Loading models from {}...".format(filename))
+        checkpoint = torch.load(filename + ".pth")
         self.policy.load_state_dict(checkpoint["policy_state_dict"])
-        self.value_net.load_state_dict(checkpoint["value_net_state_dict"])
-        self.policy_optimizer.load_state_dict(checkpoint["policy_optimizer_state_dict"])
-        self.value_optimizer.load_state_dict(checkpoint["value_optimizer_state_dict"])
+        if for_train:
+            self.policy_optimizer.load_state_dict(
+                checkpoint["policy_optimizer_state_dict"]
+            )
+            self.mean = checkpoint["mean"]
+            self.var = checkpoint["var"]
